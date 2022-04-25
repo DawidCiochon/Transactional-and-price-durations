@@ -1,0 +1,581 @@
+---
+title: "MRF Projekt II"
+author: "Dawid Ciochoń, Jakub Górowski, Adrian Gzyl"
+date: "29 12 2021"
+output: html_document
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 80%;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+<div style="text-align: justify"> 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Wybór spółek
+
+Na podstawie historycznych portfeli indeksów ze strony GPW Benchmark wybrano spółki:   
+- [Cyfrowy Polsat](https://stooq.pl/q/?s=CPS) - spółka z WIG20   
+- [CD Projekt](https://stooq.pl/q/?s=cdr) - spółka z mWIG40    
+Dane zostały zebrane z trzech plików i połączone za pomocą funkcji rbind(). Ponizej wypisano średnią cenę akcji Cyfrowego Polastu oraz CD Projektu, aby potwierdzić, że ich ceny posiadają zbliżone wartości.
+
+```{r echo=FALSE, error=FALSE, message=FALSE, warning=FALSE, results='hide'}
+library(dplyr)
+library ("berryFunctions")
+library(data.table)
+library(lubridate)
+library(ggplot2)
+setwd("C:/Users/jakub/Documents/AGH/2ST/3 semestr/MRF/P2/Projekt")
+
+dane1 <- read.csv("dane1.csv",sep = ';')
+dane_cyfrpl_1 <- dane1 %>% filter(nazwa == "CYFRPLSAT")
+dane_CdProj_1 <- dane1 %>% filter(nazwa == "CDPROJEKT")
+
+dane2 <- read.csv("dane2.csv",sep = ';')
+dane_cyfrpl_2 <- dane2 %>% filter(nazwa == "CYFRPLSAT")
+dane_CdProj_2 <- dane2 %>% filter(nazwa == "CDPROJEKT")
+
+dane3 <- read.csv("dane3.csv",sep = ';')
+dane_cyfrpl_3 <- dane3 %>% filter(nazwa == "CYFRPLSAT")
+dane_CdProj_3 <- dane3 %>% filter(nazwa == "CDPROJEKT")
+
+#Wczytane dane z 3 plikow lacze w jeden zbior
+dane_cyfrpl <- rbind(dane_cyfrpl_1,dane_cyfrpl_2,dane_cyfrpl_3)
+dane_CdProj <- rbind(dane_CdProj_1,dane_CdProj_2,dane_CdProj_3)
+
+
+mean(dane_cyfrpl$cena)
+mean(dane_CdProj$cena)
+```
+
+## 2 Transakcyjne czasy trwania
+
+### a) Konstrukcja szeregu transakcyjnych czasów trwania
+
+Następnie wyliczono iloczyny ceny i wolumenu, które wykorzystano przy obliczaniu cen dla transakcyjnych czasów trwania (będących średnią ważoną cen, z wartościami wolumenu jako wagami). 
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+
+#Obliczam dodatkowo kolumne cena*wolumen - przyda się do wyznaczania cen dla transakcyjnych czasów trwania
+dane_cyfrpl$cenaXwolumen = dane_cyfrpl$cena*dane_cyfrpl$wolumen
+dane_CdProj$cenaXwolumen = dane_CdProj$cena*dane_CdProj$wolumen
+
+#Agreguje dane po godzinie i dacie - w ten sposób otrzymuję sumy dla obserwacji, ktore są w tej samej godzinie
+cyfrpl <- aggregate(dane_cyfrpl[,c(5,6)], by=list(dane_cyfrpl$godzina,dane_cyfrpl$data),sum)
+cdProj <- aggregate(dane_CdProj[,c(5,6)], by=list(dane_CdProj$godzina,dane_CdProj$data),sum)
+
+#Obliczam ceny dla transakcyjnych czasów trwania
+cyfrpl$cena <- cyfrpl$cenaXwolumen/cyfrpl$wolumen
+cdProj$cena <- cdProj$cenaXwolumen/cdProj$wolumen
+
+#Nadaje nazwy kolumnom w nowym dataframie
+colnames(cyfrpl) <- c("godzina","data","wolumen","cenaXwolumen","cena")
+colnames(cdProj) <- c("godzina","data","wolumen","cenaXwolumen","cena")
+```
+W celu wyznaczenia transakcyjnych czasów trwania w fazie notowań ciągłych (9:00 - 16:50), najpierw dokonano zamiany wartości wyrażających godzinę na obiekty ITime, gdyż format ten zapewnia łatwiejsze porównywanie czasu. Po selekcji wartości z zadanego przedziału ponownie zamieniono, tym razem na obiekty POSIXct - które umożliwiają odejmowanie od siebie godzin (wynik jest wówczas wyrażany w sekundach). Po wykonaniu takich przekształceń obliczono różnice - będące właśnie transakcyjnymi czasami trwania. Kolejną czynnością było usunięcie różnic pomiędzy ostatnim elementem danego dnia i pierwszym dnia kolejnego (overnight). Wykorzystano w tym celu znak otrzymanej różnicy (jedyna różnica z ujemnym znakiem mogła wystąpić gdy od godziny np. 9:00 odejmowało się godzinę np. 16:50). 
+
+### b) Badanie śróddziennej sezonowości transakcyjnych czasów trwania
+
+
+Po utworzeniu dodatkowej kolumny zawierającej 5-minutowe interwały przystąpiono do obliczania **przekrojowych średnich** transakcyjnych czasów trwania. 
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+#Zamieniam godziny na obiekty ITime, ponieważ na nich mozna latwo porownywac godziny
+cyfrpl$godzina <- as.ITime(cyfrpl$godzina)
+#Transakcyjne czasy trwania wyznaczam tylko w fazie notowań ciągłych (9:00-16:50)
+cyfrpl <- subset(cyfrpl, godzina >= as.ITime("09:00:00") & godzina <= as.ITime("16:50:00"))
+cdProj$godzina <- as.ITime(cdProj$godzina)
+cdProj <- subset(cdProj, godzina >= as.ITime("09:00:00") & godzina <= as.ITime("16:50:00"))
+
+#Tu zmieniam godziny na obiekty POSIXct, poniewaz latwo je odejmowac od siebie, a roznica
+#jest wtedy w sekundach
+cyfrpl$godzina <- as.POSIXct(cyfrpl$godzina,format="%H:%M:%S")
+cdProj$godzina <- as.POSIXct(cdProj$godzina,format="%H:%M:%S")
+
+#Obliczanie roznic
+cyfrpl$timeSpan[2:length(cyfrpl$godzina)] <- diff(cyfrpl$godzina)
+cdProj$timeSpan[2:length(cdProj$godzina)] <- diff(cdProj$godzina)
+
+#Usuwam obserwacje, ktore powstaly jako roznica ostatniego elementu z dnia poprzedniego i pierwszego
+#z dnia obecnego (sa one ujemne, poniewaz odejmujemy np od godz 9 godzine 16 wiec roznica wychodzi ujemna)
+cyfrpl <- subset(cyfrpl, timeSpan >= 0)
+cdProj <- subset(cdProj, timeSpan >= 0)
+
+#Ponownie przechodze na obiekty ITime, poniewaz jak wczesniej zostalo wspomniane latwiej je porownywac
+cyfrpl$godzina <- as.ITime(cyfrpl$godzina)
+cdProj$godzina <- as.ITime(cdProj$godzina)
+str(cyfrpl)
+#Tworze ciag od 8:55 do 16:50 (co 5 minut), ktory posluzy mi do podzielenia obserwacji na interwaly 5-minutowe
+godziny <- seq(as.ITime("09:00:00"),as.ITime("16:50:00"), by=as.ITime("00:05:00"))
+sezon_cyfrpl <- data.frame(godziny,rep(0,length(godziny)))
+sezon_cdProj <- data.frame(godziny,rep(0,length(godziny)))
+colnames(sezon_cyfrpl) <- c("godzina", "sr_czas")
+colnames(sezon_cdProj) <- c("godzina", "sr_czas")
+```
+Poniżej zaprezentowano kod, który dokonuje obliczenia tych średnich:
+```{r warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+#Obliczam przekrojowe srednie transakcyjnych czasow trwania w okresie (9:00-16:50)
+i = 2
+suma_czas = 0
+licznik = 0
+while(i != nrow(sezon_cyfrpl)+1){
+  for(j in 1:nrow(cyfrpl)){
+    if(cyfrpl$godzina[j] < sezon_cyfrpl$godzina[i] & cyfrpl$godzina[j] > sezon_cyfrpl$godzina[i-1]){
+      suma_czas = suma_czas + cyfrpl$timeSpan[j]
+      licznik = licznik + 1
+    }
+  }
+  if(licznik == 0)
+    sezon_cyfrpl$sr_czas[i] = 0
+  else
+    sezon_cyfrpl$sr_czas[i] = suma_czas/licznik
+  i=i+1
+  licznik = 0
+  suma_czas = 0
+}
+
+
+i = 2
+suma_czas = 0
+licznik = 0
+while(i != nrow(sezon_cdProj)+1){
+  for(j in 1:nrow(cdProj)){
+    if(cdProj$godzina[j] < sezon_cdProj$godzina[i] & cdProj$godzina[j] > sezon_cdProj$godzina[i-1]){
+      suma_czas = suma_czas + cdProj$timeSpan[j]
+      licznik = licznik + 1
+    }
+  }
+  if(licznik == 0)
+    sezon_cdProj$sr_czas[i] = 0
+  else
+    sezon_cdProj$sr_czas[i] = suma_czas/licznik
+  i=i+1
+  licznik = 0
+  suma_czas = 0
+}
+```
+Po wykonaniu obliczeń, można zaprezentować wykresy przekrojowych średnich transakcyjnych czasów trwania.
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE}
+#Tworze wykres przekrojowych ?rednich transakcyjnych czas?w trwania w rozwa?anym okresie
+ggplot(sezon_cyfrpl, aes(x = as.POSIXct(godzina,format="%H:%M:%S"), y = sr_czas)) +
+  geom_point() +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("Przekrojowe średnie transakcyjnych czasów trwania - Cyfrowy Polsat")+
+  xlab("Godzina")
+
+
+
+ggplot(sezon_cdProj, aes(x = as.POSIXct(godzina,format="%H:%M:%S"), y = sr_czas)) +
+  geom_point() +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("Przekrojowe średnie  transakcyjnych czasów trwania - CD Projekt")+
+  xlab("Godzina")
+```
+  
+Na obydwu powyższychwykresach zaobserwować można występowanie śróddziennej sezonowości transakcyjnych czasów trwania - średni czas pomiędzy tranaskcjami jest wyraźnie niższy na początku oraz na końcu dnia. Podobnie jak w pierwszym projekcie wpływ na to ma pozyskiwanie nowych informacji na początku dnia (z okresu gdy giełda była zamknięta) oraz pod koniec funkcjonowania giełdy (ze względu na publikację danych makroekonomoicznych przez amerykańskie instytucje oraz otwarcie tamtejszej giełdy). Pozyskanie takich informacji sprawia, że inwestorzy bardziej skłonni są do dokonywania transakcji na giełdzie - co skraca czas pomiędzy kolejnymi transakcjami (czyli zmniejsza średni transakcyjny czas trwania).
+
+### c) Usuwanie śróddziennej sezonowości transakcyjnych czasów trwania
+
+Sezonowość taką można usunąć na kilka sposobów:    
+- elastyczna forma Fouriera (FFF)   
+- funkcje sklejane   
+- metody nieparametryczne, np. regresja Nadaraya-Watson'a   
+Ze względu na napotkane trudności w poprawnym zaimplementowaniu regresji Nadaraya-Watson'a w R, postanowiono wykorzystać pakiet ACDm. Zawiera on funkcję diurnalAdj(), która umożliwia zarówno wybór metody usuwania sezonowości, jak również dostosowuje się do typu danych (w naszym przypadku są to dni robocze). Zastosowano pierwszą z wymienionych metod usuwania sezonowości (dla porównania dla CD Projektu przedstawiono również wynik zastosowania metody nieparametrycznej - SuperSmoother Friedman'a):    
+**Cyfrowy Polsat - elastyczna forma Fouriera**   
+
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+library(ACDm)
+kopia_cdProj<-cdProj
+kopia_cdProj$time<-paste(kopia_cdProj$data,kopia_cdProj$godzina)
+cyfrpl$time<-paste(cyfrpl$data,cyfrpl$godzina)
+#kopia_cdProj<-kopia_cdProj[,-1]
+colnames(kopia_cdProj) <- c("godzina","data","volume","priceXvolume","price","durations","time")
+colnames(cyfrpl) <- c("godzina","data","volume","priceXvolume","price","durations","time")
+cyfrpl_FFF<-diurnalAdj(cyfrpl,aggregation = "weekdays", method = "FFF",returnSplineFnc = FALSE)
+
+```
+
+**CD Projekt - elastyczna forma Fouriera**
+
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+cdProj_FFF<-diurnalAdj(kopia_cdProj,aggregation = "weekdays", method = "FFF",returnSplineFnc = FALSE)
+
+```
+  
+Analiza składowej sezonowej dla oszacowanej FFF prowadzi do następujących wniosków:   
+- Dla CD Projektu średnie transakcyjne czasy trwania w skali całego dnia były zauważalnie krótsze w poniedziałek oraz piątek (przy czym w piątek charakteryzowały się również niższą wariancją)  
+- Dla Cyfrowego Polsatu dniem o największej wariancji oraz najdłuższych średnich transakcyjnych czasów trwania w skali całego dnia był wtorek. Podobnie jak w mniejszej ze spółek, wariancja w piątek była dosyć niska, a średnie transakcyjne czasy trwania przez większość dnia oscylowały wokół 55 sekund   
+- Niższe wartośći  średnich transakcyjnych czasów trwania w piątki oraz poniedziałki wynikać mogą z większej chęci dokonywania transakcji przed niepewnym okresem jakim jest weekend (stąd mniejsze wartości w piątek) lub po otrzymaniu nowych informacji właśnie w czasie weekendu (poniedziałek). Szczególnie wtorek wydaje się zatem dniem gdy wszelkie nowe wydarzenia jakie miały nastąpić miały miejsce, albo w weekend, albo w pierwszy dzień roboczy jakim jest wtorek - stąd mniejsza aktywność inwestorów (czyli dłuższe okresy między kolejnymi transakcjami)    
+- Wariancja związana może być z jednomyślnością inwestorów - być może w piątki większość z nich dokonuje transakcji - stąd niewielkie rozbieżności. Natomiast podczas środkowych dni tygodnia nie wszyscy mogą być tym zainteresowani - stąd bardziej zróżnicowane natężenie transakcji,a co się z tym wiąże - różne okresy pomiędzy transakcjami, czyli większe zróżnicowanie średnich transakcyjnych czasów trwania w kolejnych przedziałach 5-minutowych   
+
+**CD Projekt - SuperSmoother Friedman'a**
+
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+diurnalAdj(kopia_cdProj,aggregation = "weekdays", method = "supsmu",returnSplineFnc = FALSE)
+
+```
+  
+Zastosowanie SuperSmoother'a Friedman'a wiąże się z następującymi wnioskami:   
+- Wykresy są mniej wygładzone, niż ma to miejsce dla FFF   
+- Metoda ta nie tylko inaczej prezentuje sezonowość w ciągu danego dnia, ale również inaczej przedstawia poszczególne dni (środa w metodzie FFF jest na podobnym poziomie co wtorek oraz czwartek, natomiast w SuperSmootherze wartości są zauważalnie niższe)    
+
+
+#### Przekrojowe średnie zmodyfkowanych transakcyjnych czasów trwania
+
+Po usunięciu sezonowości za pomocą FFF ponownie przedstawiono na wykresie przekrojowe średnie  transakcyjnych czasów trwania - do obliczeń wykorzysatno przedstawiony powyżej w projekcie kod wyliczajacy pierwotne przekrojowe średnie.
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+#Obliczam przekrojowe srednie transakcyjnych czas?w trwania w okresie (9:00-16:50) - po wyg?adzeniu
+i = 2
+suma_czas = 0
+licznik = 0
+while(i != nrow(sezon_cdProj)+1){
+  for(j in 1:nrow(cdProj_FFF)){
+    if(cdProj_FFF$godzina[j] < sezon_cdProj$godzina[i] & cdProj_FFF$godzina[j] > sezon_cdProj$godzina[i-1]){
+      suma_czas = suma_czas + cdProj_FFF$adjDur[j]
+      licznik = licznik + 1
+    }
+  }
+  if(licznik == 0)
+    sezon_cdProj$sr_czas_adj[i] = 0
+  else
+    sezon_cdProj$sr_czas_adj[i] = suma_czas/licznik
+  i=i+1
+  licznik = 0
+  suma_czas = 0
+}
+```
+
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+ggplot(sezon_cdProj, aes(x = as.POSIXct(godzina,format="%H:%M:%S"), y = sr_czas_adj)) +
+  geom_point() +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("Przekrojowe średnie zmodyfikowanych transakcyjnych czasów trwania - CD Projekt")+
+  xlab("Godzina")
+```
+
+
+```{r fig.height = 4, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+##### Dla cyfrowego polsatu
+#Obliczam przekrojowe srednie transakcyjnych czas?w trwania w okresie (9:00-16:50) - po wyg?adzeniu
+i = 2
+suma_czas = 0
+licznik = 0
+while(i != nrow(sezon_cyfrpl)+1){
+  for(j in 1:nrow(cyfrpl_FFF)){
+    if(cyfrpl_FFF$godzina[j] < sezon_cyfrpl$godzina[i] & cyfrpl_FFF$godzina[j] > sezon_cyfrpl$godzina[i-1]){
+      suma_czas = suma_czas + cyfrpl_FFF$adjDur[j]
+      licznik = licznik + 1
+    }
+  }
+  if(licznik == 0)
+    sezon_cyfrpl$sr_czas_adj[i] = 0
+  else
+    sezon_cyfrpl$sr_czas_adj[i] = suma_czas/licznik
+  i=i+1
+  licznik = 0
+  suma_czas = 0
+}
+
+#Tworze wykres przekrojowych ?rednich transakcyjnych czas?w trwania w rozwa?anym okresie - po wyg?adzeniu
+ggplot(sezon_cyfrpl, aes(x = as.POSIXct(godzina,format="%H:%M:%S"), y = sr_czas_adj)) +
+  geom_point() +
+  geom_line() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("Przekrojowe średnie zmodyfikowanych transakcyjnych czasów trwania - Cyfrowy Polsat")+
+  xlab("Godzina")
+```
+
+Na każdym z wykresów zauważyć mozna znaczną różnicę - w szczególności dotyczącą zakończenia dnia. Przekrojowe średnie transakcyjne czasy trwania nie maleją już znacząco - ciągle oscylują one wokół wartości 1. Większość wachań nie jest większa niż 0.25, natomiast największe wahania są równe ok. 0.5. Jedynie dla kilku pierwszych obserwacji wciąż widoczne jest delikatne odchylenie. Na tej podstawie uznać można, że przeprowadzane usuwanie sezonowości było skuteczne.
+
+## 3 Cenowe czasy trwania
+
+### a) Przekrojowe średnie czasów trwania ceny akcji
+
+Pierwszym krokiem do uzyskania przekrojowych średnich czasów trwania cen akcji było zaokrąglenie cen do groszy - tak aby móc dokonywać prównania z przyjętym progiem. Następnie do uzyskania cenowych czasów trwania zastosowano następujące rozwiązanie:
+
+```{r  echo=TRUE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+nowa <- rep(0,nrow(cyfrpl)) 
+cyfrpl <- cbind(cyfrpl,nowa) #Tworzona jest nowa kolumna z zerami, która dołączana jest do ramki danych - zawierać będzie ona cenowe czasy trwania
+cyfrpl$price <- round(cyfrpl$price,2) #Ceny są zaokrąglane
+
+roznica = 0.05 #ustalany jest próg - tutaj 5 gr
+poprzedni = 1 #Licznik wskazujący ostatni rozpatrywany wiersz (w którym wystąpiło przekroczenie progu)
+for(i in 2:nrow(cyfrpl)){  #dla każdego wiersza
+  if(round(abs(cyfrpl$price[i]-cyfrpl$price[poprzedni]),10) >= roznica){ 
+    #jeżeli różnica cen pomiędzy aktualnym wierszem, a ostatnim rozpatrywanym jest większa niż przyjęty próg
+    cyfrpl$nowa[i] = cyfrpl$godzina[i] - cyfrpl$godzina[poprzedni] #Do nowej kolumny zapisywany jest czas dzielący te dwa wiersze 
+    poprzedni = i #aktualizowany jest licznik
+  }
+}
+
+#Usuwam obserwacje, ktore powstaly jako roznica ostatniego elementu z dnia poprzedniego i pierwszego
+#z dnia obecnego (sa one ujemne, poniewaz odejmujemy np od godz 9 godzine 16 wiec roznica wychodzi ujemna)
+cyfrpl <- subset(cyfrpl, nowa >= 0)
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+
+nowa3 <- rep(0,nrow(cyfrpl))
+cyfrpl <- cbind(cyfrpl,nowa3)
+
+roznica3 = 0.03
+poprzedni = 1
+for(i in 2:nrow(cyfrpl)){
+  if(round(abs(cyfrpl$price[i]-cyfrpl$price[poprzedni]),10) >= roznica3){
+    cyfrpl$nowa3[i] = cyfrpl$godzina[i] - cyfrpl$godzina[poprzedni]
+    poprzedni = i
+  }
+}
+
+nowa1 <- rep(0,nrow(cyfrpl))
+cyfrpl <- cbind(cyfrpl,nowa1)
+
+roznica1 = 0.01
+poprzedni = 1
+for(i in 2:nrow(cyfrpl)){
+  if(round(abs(cyfrpl$price[i]-cyfrpl$price[poprzedni]),10) >= roznica1){
+    cyfrpl$nowa1[i] = cyfrpl$godzina[i] - cyfrpl$godzina[poprzedni]
+    poprzedni = i
+  }
+}
+cyfrpl <- subset(cyfrpl, nowa3 >= 0)
+cyfrpl <- subset(cyfrpl, nowa1 >= 0)
+```
+Po uzyskaniu cenowych czasów trwania wyliczane są przekrojowe średnie cenowe czasy trwania - odbywa się to w analogiczny sposób jak dla przekrojowych średnich transakcyjnych czasów trwania. 
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+
+i = 2
+suma_czas_5gr = 0
+suma_czas_3gr = 0
+suma_czas_1gr = 0
+licznik_5gr = 0
+licznik_3gr = 0
+licznik_1gr = 0
+licznik = 0
+while(i != nrow(sezon_cyfrpl)+1){
+  for(j in 1:nrow(cyfrpl)){
+    if(cyfrpl$godzina[j] < sezon_cyfrpl$godzina[i] & cyfrpl$godzina[j] > sezon_cyfrpl$godzina[i-1]){
+      if(cyfrpl$nowa[j] != 0){
+        suma_czas_5gr = suma_czas_5gr + cyfrpl$nowa[j]
+        licznik_5gr = licznik_5gr + 1
+      }
+      if(cyfrpl$nowa3[j] != 0){
+        suma_czas_3gr = suma_czas_3gr + cyfrpl$nowa3[j]
+        licznik_3gr = licznik_3gr + 1
+      }
+      if(cyfrpl$nowa1[j] != 0){
+        suma_czas_1gr = suma_czas_1gr + cyfrpl$nowa1[j]
+        licznik_1gr = licznik_1gr + 1
+      }
+    }
+  }
+  if(licznik_5gr == 0){
+    sezon_cyfrpl$sr_czas_cen_5gr[i] = 0
+  }else{
+    sezon_cyfrpl$sr_czas_cen_5gr[i] = suma_czas_5gr/licznik_5gr
+  }
+  
+  if(licznik_3gr == 0){
+    sezon_cyfrpl$sr_czas_cen_3gr[i] = 0
+  }else{
+    sezon_cyfrpl$sr_czas_cen_3gr[i] = suma_czas_3gr/licznik_3gr
+  }
+
+  if(licznik_1gr == 0){
+    sezon_cyfrpl$sr_czas_cen_1gr[i] = 0
+  }else{
+    sezon_cyfrpl$sr_czas_cen_1gr[i] = suma_czas_1gr/licznik_1gr
+  }
+  
+    
+  i=i+1
+  licznik_5gr = 0
+  licznik_3gr = 0
+  licznik_1gr = 0
+  suma_czas_5gr = 0
+  suma_czas_3gr = 0
+  suma_czas_1gr = 0
+}
+```
+
+```{r fig.height = 6, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+plot(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), 
+     sezon_cyfrpl$sr_czas_cen_5gr,type="l",col="red",
+     xlab = "Godzina", ylab = "sr czas cen", main = "Przekrojowe średnie czasów trwania ceny akcji Cyfrowy Polsat")
+lines(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), sezon_cyfrpl$sr_czas_cen_1gr,col="green")
+lines(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), sezon_cyfrpl$sr_czas_cen_3gr,col="blue")
+legend("topright", legend=c("5 gr", "1 gr", "3 gr"),
+       col=c("red", "green", "blue"), lty=1:2)
+```
+  
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+#  Dla CD Project
+
+nowa <- rep(0,nrow(cdProj))
+cdProj <- cbind(cdProj,nowa)
+cdProj$cena <- round(cdProj$cena,2)
+
+roznica = 0.05
+poprzedni = 1
+for(i in 2:nrow(cdProj)){
+  if(round(abs(cdProj$cena[i]-cdProj$cena[poprzedni]),10) >= roznica){
+    cdProj$nowa[i] = cdProj$godzina[i] - cdProj$godzina[poprzedni]
+    poprzedni = i
+  }
+}
+
+nowa3 <- rep(0,nrow(cdProj))
+cdProj <- cbind(cdProj,nowa3)
+
+roznica3 = 0.03
+poprzedni = 1
+for(i in 2:nrow(cdProj)){
+  if(round(abs(cdProj$cena[i]-cdProj$cena[poprzedni]),10) >= roznica3){
+    cdProj$nowa3[i] = cdProj$godzina[i] - cdProj$godzina[poprzedni]
+    poprzedni = i
+  }
+}
+
+nowa1 <- rep(0,nrow(cdProj))
+cdProj <- cbind(cdProj,nowa1)
+
+roznica1 = 0.01
+poprzedni = 1
+for(i in 2:nrow(cdProj)){
+  if(round(abs(cdProj$cena[i]-cdProj$cena[poprzedni]),10) >= roznica1){
+    cdProj$nowa1[i] = cdProj$godzina[i] - cdProj$godzina[poprzedni]
+    poprzedni = i
+  }
+}
+cdProj <- subset(cdProj, nowa >= 0)
+cdProj <- subset(cdProj, nowa1 >= 0)
+cdProj <- subset(cdProj, nowa3 >= 0)
+
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+
+i = 2
+suma_czas_5gr = 0
+suma_czas_3gr = 0
+suma_czas_1gr = 0
+licznik_5gr = 0
+licznik_3gr = 0
+licznik_1gr = 0
+licznik = 0
+while(i != nrow(sezon_cdProj)+1){
+  for(j in 1:nrow(cdProj)){
+    if(cdProj$godzina[j] < sezon_cdProj$godzina[i] & cdProj$godzina[j] > sezon_cdProj$godzina[i-1]){
+      if(cdProj$nowa[j] != 0){
+        suma_czas_5gr = suma_czas_5gr + cdProj$nowa[j]
+        licznik_5gr = licznik_5gr + 1
+      }
+      if(cdProj$nowa3[j] != 0){
+        suma_czas_3gr = suma_czas_3gr + cdProj$nowa3[j]
+        licznik_3gr = licznik_3gr + 1
+      }
+      if(cdProj$nowa1[j] != 0){
+        suma_czas_1gr = suma_czas_1gr + cdProj$nowa1[j]
+        licznik_1gr = licznik_1gr + 1
+      }
+    }
+  }
+  if(licznik_5gr == 0){
+    sezon_cdProj$sr_czas_cen_5gr[i] = 0
+  }else{
+    sezon_cdProj$sr_czas_cen_5gr[i] = suma_czas_5gr/licznik_5gr
+  }
+  
+  if(licznik_3gr == 0){
+    sezon_cdProj$sr_czas_cen_3gr[i] = 0
+  }else{
+    sezon_cdProj$sr_czas_cen_3gr[i] = suma_czas_3gr/licznik_3gr
+  }
+  
+  if(licznik_1gr == 0){
+    sezon_cdProj$sr_czas_cen_1gr[i] = 0
+  }else{
+    sezon_cdProj$sr_czas_cen_1gr[i] = suma_czas_1gr/licznik_1gr
+  }
+  
+  
+  i=i+1
+  licznik_5gr = 0
+  licznik_3gr = 0
+  licznik_1gr = 0
+  suma_czas_5gr = 0
+  suma_czas_3gr = 0
+  suma_czas_1gr = 0
+}
+```
+
+```{r fig.height = 6, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+plot(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), 
+     sezon_cdProj$sr_czas_cen_5gr,type="l",col="red",
+     xlab = "Godzina", ylab = "sr czas cen", main="Przekrojowe średnie czasów trwania ceny akcji CD Projekt")
+lines(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), sezon_cdProj$sr_czas_cen_1gr,col="green")
+lines(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), sezon_cdProj$sr_czas_cen_3gr,col="blue")
+legend("topright", legend=c("5 gr", "1 gr", "3 gr"),
+       col=c("red", "green", "blue"), lty=1:2)
+```
+     
+Wnioski otrzymane z powyższych wykresów:    
+- Przekrojowe średnie czasów trwania ceny akcji są tym większe, im większy jest przyjęty próg. Wraz ze zwiększeniem progu zwiększa się również ich wariancja. Oznacza to, że kolejne transakcje akcjami tych spółek na giełdzie najczęściej posiadają zbliżoną cenę - w ciągu dnia wartość przekrojowej średniej przy progu 3 gr jest mniejsza niż przy progu 5 gr, co oznacza że transakcje o różnicy cen większej lub równej 3 gr zachodzą w krótszych odstepach czasu (częściej) w porównaniu do różnicy wynoszącej 5 gr.       
+- Zauważyć można również wpływ sezonowości na wartości przekrojowych średnich - szczególnie na początku dnia, gdy transakcji jest więcej, wartości dla różnych progów są do siebie zbliżone - zwłaszcza dla CD Projektu. Różnica pomiędzy spółkami wynikać może z obszaru działalności - CD Projekt, jako firma znana poza granicami Polski, może być bardziej czuła na informacje pozyskane ze świata po zamknięciu giełdy - przez to jej wartość może bardziej się zmieniać, co powoduje że po ponownym otwarciu giełdy inwestorzy zawierają transakcje po różnych cenach - nawet bardziej rozbieżnych.     
+- W ciągu dnia (od około godziny 11 do 15) wystęPuje najwększa rozbieżność przekrojowych średnich cenowych czasów trwania. W tym czasie mniej zawiera się transakcji, więc też większe różnice w ich cenach występować będą rzadziej.     
+-Dla CD Projektu przekrojowe średnie czasy trwania cen akcji, dla progu 5 gr, są większe niż Cyfrowego Polsatu (najdłuższy czas to aż ok. 3000 sekund, czyli 50 minut - prawdopodobnie w jednym z rozpatrywanych dni przez długi okres nie nastąpiła zmiana ceny wynosząca co najmniej 5 groszy, co zaburzyło pozostałe wartości tego w tym okresie). Poza wskazanym outlierem występują również inne wartości, osiągające około 1500 sekund - dla porównania dla Cyfrowego Polsatu najdłuższy przekrojowy średni czas to ok. 1200 sekund. Rozbieżności te mogą wynikać z większego zainteresowania Cyfrowym Polsatem, jako większą spółką     
+
+
+### b) Porównanie spółek przy tym samym progu
+
+```{r fig.height = 6, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+# 5 gr
+
+plot(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), 
+     sezon_cdProj$sr_czas_cen_5gr,type="l",col="red",
+     xlab = "Godzina", ylab = "sr czas cen", main="Porówanie przekrojowych średnich czasów trwania cen akcji - próg 5 gr")
+lines(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), sezon_cyfrpl$sr_czas_cen_5gr,col="green")
+legend("topleft", legend=c("5 gr cdProj", "5 gr cyfrpl"),
+       col=c("red", "green"), lty=1:2)
+```
+
+```{r fig.height = 6, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+# 3 gr
+
+plot(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), 
+     sezon_cdProj$sr_czas_cen_3gr,type="l",col="red",
+     xlab = "Godzina", ylab = "sr czas cen", main="Porówanie przekrojowych średnich czasów trwania cen akcji - próg 3 gr")
+lines(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), sezon_cyfrpl$sr_czas_cen_3gr,col="green")
+legend("topleft", legend=c("3 gr cdProj", "3 gr cyfrpl"),
+       col=c("red", "green"), lty=1:2)
+```
+
+```{r fig.height = 6, fig.width = 7, fig.align = "center" , echo=FALSE, warning=FALSE, error=FALSE, message=FALSE, results='hide'}
+# 1 gr
+
+plot(as.POSIXct(sezon_cdProj$godzina,format="%H:%M:%S"), 
+     sezon_cdProj$sr_czas_cen_1gr,type="l",col="red",
+     xlab = "Godzina", ylab = "sr czas cen", main="Porówanie przekrojowych średnich czasów trwania cen akcji - próg 1 gr")
+lines(as.POSIXct(sezon_cyfrpl$godzina,format="%H:%M:%S"), sezon_cyfrpl$sr_czas_cen_1gr,col="green")
+legend("topleft", legend=c("1 gr cdProj", "1 gr cyfrpl"),
+       col=c("red", "green"), lty=1:2)
+```
+     
+Analizując bezpośrednie porównanie przekrojowych średnich czasów trwania cen akcji przy konkretnym progu otrzymano następujące wnioski:   
+- Przekrojowe średnie czasy trwania cen akcji dla progu 1 grosz oscylują w okolicy 90 (Cyfrowy Polsat) i 130 (CD Projekt). Dla 3 groszy są to odpowiednio wartości 200 i 280, a dla największego z progów około 500 dla każdej ze spółek          
+- Im większy przyjęto próg, tym wykresy przekrojowych średnich bardziej na siebie nachodzą - oznacza to, że transakcje różniące się ceną o co najmniej 5 groszy zachodzą dla obydwu spółek z podobną częstotliwością.  
+- Dla progu 3 i 1 grosz zauważyć można oddzielenie wykresów poszczególnych spółek. Wykres CD Projektu znajduje się nad Cyfrowym Polsatem, co oznacza, że średnio zmiana ceny większa lub równą danemu progowi następowała szybciej dla większej spółki
+- Największe rozbieżności pomiędzy wykresami dla progów 3 i 1 gr występują pomiędzy godziną 14:30, a 16:00. Różnice w wartościach przekrojowych średnich w tym okresie (dla mniejszych progów) oznaczają ogólne mniejsze zainteresowanie transakcjami akcjami CD Projektu w odniesieniu do Cyfrowego Polsatu - gdyż to właśnie transakcje o mniejszych różnicach w cenie są tymi najczęstszymi. Wynikać może z tego mniejsze znaczenie amerykańskich danych makroekonomicznych i otwarcia nowojorskiej giełdy na CD Projekt, jako mniejszą z porównywanych spółek.    
+- Im mniejszy próg, tym wyraźniej zaznacza się występowanie sezonowościczasów trwania cen akcji - dla 1 grosza wykres zbliżony jest do odwróconej litery "U", dla większych progów następuje stopniowe wypłaszczenie 
+
+
+
+
